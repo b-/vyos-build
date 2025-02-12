@@ -1,4 +1,4 @@
-# Copyright (C) 2018-2022 VyOS maintainers and contributors
+# Copyright (C) 2018-2024 VyOS maintainers and contributors
 #
 # This program is free software; you can redistribute it and/or modify
 # in order to easy exprort images built to "external" world
@@ -18,7 +18,9 @@
 
 # This Dockerfile is installable on both x86, x86-64, armhf and arm64 systems
 ARG ARCH=
-FROM ${ARCH}debian:bullseye
+FROM ${ARCH}debian:bookworm
+
+RUN grep "VERSION_ID" /etc/os-release || (echo 'VERSION_ID="12"' >> /etc/os-release)
 
 # It is also possible to emulate an arm system inside docker,
 # execution of this emulated system needs to be executed on an x86 or x86-64 host.
@@ -38,14 +40,19 @@ FROM ${ARCH}debian:bullseye
 # On some versions of docker the emulation framework is not installed by default and
 # you need to install qemu, qemu-user-static and register qemu inside docker manually using:
 # `docker run --rm --privileged multiarch/qemu-user-static:register --reset`
-LABEL authors="VyOS Maintainers <maintainers@vyos.io>"
-ENV DEBIAN_FRONTEND noninteractive
+LABEL authors="VyOS Maintainers <maintainers@vyos.io>" \
+      org.opencontainers.image.authors="VyOS Maintainers <maintainers@vyos.io>" \
+      org.opencontainers.image.url="https://github.com/vyos/vyos-build" \
+      org.opencontainers.image.documentation="https://docs.vyos.io/en/latest/contributing/build-vyos.html" \
+      org.opencontainers.image.source="https://github.com/vyos/vyos-build" \
+      org.opencontainers.image.vendor="Sentrium S.L." \
+      org.opencontainers.image.licenses="GNU" \
+      org.opencontainers.image.title="vyos-build" \
+      org.opencontainers.image.description="Container to build VyOS ISO" \
+      org.opencontainers.image.base.name="docker.io/debian/debian:bookworm"
+ENV DEBIAN_FRONTEND=noninteractive
 
-# Standard shell should be bash not dash
-RUN echo "dash dash/sh boolean false" | debconf-set-selections && \
-    dpkg-reconfigure dash
-
-RUN echo -e 'APT::Install-Recommends "0";\nAPT::Install-Suggests "0";' > /etc/apt/apt.conf.d/01norecommends
+RUN /bin/echo -e 'APT::Install-Recommends "0";\nAPT::Install-Suggests "0";' > /etc/apt/apt.conf.d/01norecommends
 
 RUN apt-get update && apt-get install -y \
       dialog \
@@ -53,10 +60,11 @@ RUN apt-get update && apt-get install -y \
       locales
 
 RUN echo "en_US.UTF-8 UTF-8" > /etc/locale.gen && locale-gen
-ENV LANG en_US.utf8
+ENV LANG=en_US.utf8
 
-ENV OCAML_VERSION 4.12.0
+ENV OCAML_VERSION=4.14.2
 
+# Base packaged needed to build packages and their package dependencies
 RUN apt-get update && apt-get install -y \
       bash \
       bash-completion \
@@ -69,6 +77,7 @@ RUN apt-get update && apt-get install -y \
       mc \
       pbuilder \
       devscripts \
+      equivs \
       lsb-release \
       libtool \
       libapt-pkg-dev \
@@ -78,7 +87,8 @@ RUN apt-get update && apt-get install -y \
       gosu \
       po4a \
       openssh-client \
-      jq
+      jq \
+      socat
 
 # Packages needed for vyos-build
 RUN apt-get update && apt-get install -y \
@@ -87,15 +97,21 @@ RUN apt-get update && apt-get install -y \
       squashfs-tools \
       genisoimage \
       fakechroot \
+      pipx \
       python3-git \
       python3-pip \
       python3-flake8 \
       python3-autopep8 \
+      python3-tomli \
+      python3-tomli-w \
+      yq \
       debootstrap \
-      live-build
+      live-build \
+      gdisk \
+      dosfstools
 
-# vyos-build now also makes use of TOML - install yq which has toml support
-RUN pip install yq==3.1.0
+# Packages for TPM test
+RUN apt-get update && apt-get install -y swtpm
 
 # Syslinux and Grub2 is only supported on x86 and x64 systems
 RUN if dpkg-architecture -ii386 || dpkg-architecture -iamd64; then \
@@ -104,9 +120,7 @@ RUN if dpkg-architecture -ii386 || dpkg-architecture -iamd64; then \
         grub2; \
     fi
 
-#
 # Building libvyosconf requires a full configured OPAM/OCaml setup
-#
 RUN apt-get update && apt-get install -y \
       debhelper \
       libffi-dev \
@@ -120,27 +134,24 @@ RUN dpkg-reconfigure ca-certificates; \
       echo "cacert=/etc/ssl/certs/ca-certificates.crt" >> ~/.curlrc; \
     fi
 
-
 # Installing OCAML needed to compile libvyosconfig
 RUN curl https://raw.githubusercontent.com/ocaml/opam/master/shell/install.sh \
       --output /tmp/opam_install.sh --retry 10 --retry-delay 5 && \
-    sed -i 's/read BINDIR/BINDIR=""/' /tmp/opam_install.sh && sh /tmp/opam_install.sh && \
+    sed -i 's/read -r BINDIR/BINDIR=""/' /tmp/opam_install.sh && sh /tmp/opam_install.sh && \
     opam init --root=/opt/opam --comp=${OCAML_VERSION} --disable-sandboxing --no-setup
 
-RUN eval $(opam env --root=/opt/opam --set-root) && opam install -y \
-      pcre re
+RUN eval $(opam env --root=/opt/opam --set-root) && \
+    opam pin add pcre https://github.com/mmottl/pcre-ocaml.git#0c4ca03a -y
 
 RUN eval $(opam env --root=/opt/opam --set-root) && opam install -y \
+      re \
       num \
       ctypes \
       ctypes-foreign \
       ctypes-build \
       containers \
-      fileutils
-
-# Build VyConf which is required to build libvyosconfig
-RUN eval $(opam env --root=/opt/opam --set-root) && \
-    opam pin add vyos1x-config https://github.com/vyos/vyos1x-config.git#40f7d2af -y
+      fileutils \
+      xml-light
 
 # Packages needed for libvyosconfig
 RUN apt-get update && apt-get install -y \
@@ -151,17 +162,31 @@ RUN apt-get update && apt-get install -y \
 # Build libvyosconfig
 RUN eval $(opam env --root=/opt/opam --set-root) && \
     git clone https://github.com/vyos/libvyosconfig.git /tmp/libvyosconfig && \
-    cd /tmp/libvyosconfig && git checkout 2f90f3c5 && \
+    cd /tmp/libvyosconfig && git checkout 677d1e2bf8109b9fd4da60e20376f992b747e384 && \
     dpkg-buildpackage -uc -us -tc -b && \
     dpkg -i /tmp/libvyosconfig0_*_$(dpkg-architecture -qDEB_HOST_ARCH).deb
+
+# Packages needed for open-vmdk
+RUN apt-get update && apt-get install -y \
+      zlib1g-dev
 
 # Install open-vmdk
 RUN wget -O /tmp/open-vmdk-master.zip https://github.com/vmware/open-vmdk/archive/master.zip && \
     unzip -d /tmp/ /tmp/open-vmdk-master.zip && \
-    cd /tmp/open-vmdk-master/ && \
-    make && \
-    make install
+    cd /tmp/open-vmdk-master/ && make && make install
 
+# Packages need for build live-build
+RUN apt-get update && apt-get install -y \
+      cpio
+
+COPY patches/live-build/0001-save-package-info.patch /tmp/0001-save-package-info.patch
+
+RUN git clone https://salsa.debian.org/live-team/live-build.git /tmp/live-build && \
+    cd /tmp/live-build && git checkout debian/1%20240810 && \
+    patch -p1 < /tmp/0001-save-package-info.patch && \
+    dch -n "Applying fix for save package info" && \
+    dpkg-buildpackage -us -uc && \
+    dpkg -i ../live-build*.deb
 #
 # live-build: building in docker fails with mounting /proc | /sys
 #
@@ -178,237 +203,75 @@ RUN wget https://salsa.debian.org/klausenbusk-guest/debootstrap/commit/a9a603b17
     dpkg-buildpackage -us -uc && \
     sudo dpkg -i ../debootstrap*.deb
 
-# Packages needed for vyatta-cfg
-RUN apt-get update && apt-get install -y \
-      autotools-dev \
-      libglib2.0-dev \
-      libboost-filesystem-dev \
-      libapt-pkg-dev \
-      libtool \
-      flex \
-      bison \
-      libperl-dev \
-      autoconf \
-      automake \
-      pkg-config \
-      cpio
-
-# Packages needed for vyatta-cfg-firewall
-RUN apt-get update && apt-get install -y \
-      autotools-dev \
-      autoconf \
-      automake \
-      cpio
-
 # Packages needed for Linux Kernel
-# gnupg2 is required by Jenkins for the TAR verification
+# cmake required by accel-ppp
 RUN apt-get update && apt-get install -y \
+      cmake \
       gnupg2 \
       rsync \
+      libelf-dev \
       libncurses5-dev \
       flex \
       bison \
       bc \
       kmod \
       cpio \
-      python-is-python3
+      python-is-python3 \
+      dwarves \
+      nasm \
+      rdfind
 
 # Packages needed for Intel QAT out-of-tree drivers
+# FPM is used when generation Debian pckages for e.g. Intel QAT drivers
 RUN apt-get update && apt-get install -y \
       pciutils \
-      yasm
-
-# Packages needed for Wireguard
-RUN apt-get update && apt-get install -y \
-      debhelper-compat \
-      dkms \
-      pkg-config \
-      systemd
-
-# Packages needed for iproute2
-RUN apt-get update && apt-get install -y \
-      bison \
-      debhelper \
-      flex \
-      libxtables-dev \
-      libatm1-dev \
-      libcap-dev \
-      libdb-dev \
-      libbsd-dev \
-      libelf-dev \
-      libmnl-dev \
-      libselinux1-dev \
-      linux-libc-dev \
-      pkg-config \
-      po-debconf \
-      zlib1g-dev
-
-# Prerequisites for building rtrlib
-# see http://docs.frrouting.org/projects/dev-guide/en/latest/building-frr-for-debian8.html
-RUN apt-get update && apt-get install -y \
-      cmake \
-      dpkg-dev \
-      debhelper \
-      libssh-dev \
-      doxygen
-
-# Build rtrlib release 0.8.0
-RUN export RTRLIB_VERSION="0.8.0" export ARCH=$(dpkg-architecture -qDEB_HOST_ARCH) && \
-    git clone https://github.com/rtrlib/rtrlib.git /tmp/rtrlib && cd /tmp/rtrlib && \
-    dpkg-buildpackage -uc -us -tc -b && \
-    dpkg -i ../librtr0*_${ARCH}.deb ../librtr-dev*_${ARCH}.deb ../rtr-tools*_${ARCH}.deb
-
-# Packages needed to build libyang2
-RUN pip install apkg
-RUN apt-get update && apt-get install -y \
-      graphviz \
-      cmake \
-      libpcre3-dev \
-      python3-pip
-
-# Prerequisites for building FRR from source
-# see http://docs.frrouting.org/projects/dev-guide/en/latest/building-frr-for-debian8.html
-#
-RUN export LIBYANG_COMMIT="v2.0.164" && \
-    git clone https://github.com/CESNET/libyang.git && \
-    cd libyang && git checkout $LIBYANG_COMMIT && apkg build -i && \
-    cd pkg/pkgs/debian-11/libyang2_* && dpkg -i *.deb
-
-# FRR documentation also has a dependency on an up to date spinx version
-RUN pip install sphinx==4.0.2
-
-# Packages needed to build FRR itself
-# https://github.com/FRRouting/frr/blob/master/doc/developer/building-libyang.rst
-# for more info
-RUN apt-get update && apt-get install -y \
-      bison \
-      chrpath \
-      debhelper \
-      flex \
-      gawk \
-      install-info \
-      libc-ares-dev \
-      libcap-dev \
-      libjson-c-dev \
-      libpam0g-dev \
-      libpcre3-dev \
-      libpython3-dev \
-      libreadline-dev \
-      librtr-dev \
-      libsnmp-dev \
-      libssh-dev \
-      libsystemd-dev \
-      lsb-base \
-      pkg-config \
-      python3 \
-      python3-dev \
-      python3-pytest \
-      texinfo
-
-# Packages needed for hvinfo
-RUN apt-get update && apt-get install -y \
-      gnat \
-      gprbuild
+      yasm \
+      ruby \
+      libudev-dev \
+      ruby-dev \
+      rubygems \
+      build-essential
+RUN gem install --no-document fpm
 
 # Packages needed for vyos-1x
-RUN pip install git+https://github.com/aristanetworks/j2lint.git@341b5d5db86
-RUN apt-get update && apt-get install -y \
+RUN pip install --break-system-packages \
+      git+https://github.com/aristanetworks/j2lint.git@341b5d5db86 \
+      pyhumps==3.8.0; \
+    apt-get update && apt-get install -y \
       dh-python \
       fakeroot \
+      iproute2 \
       libzmq3-dev \
+      procps \
       python3 \
       python3-setuptools \
-      python3-sphinx \
+      python3-inotify \
       python3-xmltodict \
       python3-lxml \
       python3-nose \
       python3-netifaces \
       python3-jinja2 \
+      python3-jmespath \
       python3-psutil \
       python3-stdeb \
       python3-all \
       python3-coverage \
+      python3-hurry.filesize \
+      python3-netaddr \
+      python3-paramiko \
+      python3-passlib \
+      python3-tabulate \
+      python3-zmq \
+      pylint \
       quilt \
       whois
 
-Run git clone https://github.com/dsoprea/PyInotify.git /tmp/inotify && \
-    cd /tmp/inotify && \
-    python3 setup.py --command-packages=stdeb.command bdist_deb && \
-    sudo dpkg -i ./deb_dist/python3-inotify*.deb
-
-Run git clone https://github.com/nficano/humps.git /tmp/humps && \
-    cd /tmp/humps && git checkout v3.8.0 && \
-    python3 setup.py --command-packages=stdeb.command bdist_deb; cp deb_dist/*.deb .. && \
-    dpkg -i /tmp/python3-pyhumps_*_all.deb
-
-# Packages needed for vyos-1x-xdp package, gcc-multilib is not available on
-# arm64 but required by XDP
-RUN if dpkg-architecture -ii386 || dpkg-architecture -iamd64; then \
-      apt-get update && apt-get install -y \
-        gcc-multilib \
-        clang \
-        llvm \
-        libelf-dev \
-        libpcap-dev \
-        libbpf-dev \
-        build-essential; \
-    fi
-
-# Go required for validators and vyos-xe-guest-utilities
-RUN GO_VERSION_INSTALL="1.18.3" ; \
+# Go required for telegraf and prometheus exporters build
+RUN GO_VERSION_INSTALL="1.23.2" ; \
     wget -O /tmp/go${GO_VERSION_INSTALL}.linux-amd64.tar.gz https://go.dev/dl/go${GO_VERSION_INSTALL}.linux-$(dpkg-architecture -qDEB_HOST_ARCH).tar.gz ; \
     tar -C /opt -xzf /tmp/go*.tar.gz && \
     rm /tmp/go*.tar.gz
 RUN echo "export PATH=/opt/go/bin:$PATH" >> /etc/bash.bashrc
-
-# Packages needed for ipaddrcheck
-RUN apt-get update && apt-get install -y \
-      libcidr-dev \
-      check
-
-# Packages needed for vyatta-quagga
-RUN apt-get update && apt-get install -y \
-      libpam-dev \
-      libcap-dev \
-      libsnmp-dev \
-      gawk
-
-# Packages needed for vyos-strongswan
-RUN apt-get update && apt-get install -y \
-      bison \
-      bzip2 \
-      debhelper \
-      dh-apparmor \
-      dpkg-dev \
-      flex \
-      gperf \
-      libxtables-dev \
-      libcap-dev \
-      libcurl4-openssl-dev \
-      libgcrypt20-dev \
-      libgmp3-dev \
-      libiptc-dev \
-      libkrb5-dev \
-      libldap2-dev \
-      libnm-dev \
-      libpam0g-dev \
-      libsqlite3-dev \
-      libssl-dev \
-      libsystemd-dev \
-      libtool \
-      libtss2-dev \
-      libxml2-dev \
-      pkg-config \
-      po-debconf \
-      systemd \
-      tzdata \
-      python-setuptools \
-      python3-stdeb
-
-# Packages needed for opennhrp
-RUN apt-get update && apt-get install -y \
-      libc-ares-dev \
-      libev-dev
 
 # Packages needed for Qemu test-suite
 # This is for now only supported on i386 and amd64 platforms
@@ -449,10 +312,6 @@ RUN apt-get update && apt-get install -y \
       python3-pytest-cov \
       cloud-utils
 
-# Packages needed for libnss-mapuser & libpam-radius
-RUN apt-get update && apt-get install -y \
-      libaudit-dev
-
 # Install utillities for building grub and u-boot images
 RUN if dpkg-architecture -iarm64; then \
     apt-get update && apt-get install -y \
@@ -466,55 +325,6 @@ RUN if dpkg-architecture -iarm64; then \
       grub-efi-arm; \
     fi
 
-# Packages needed for libnftnl
-RUN apt-get update && apt-get install -y \
-      debhelper-compat \
-      libmnl-dev \
-      libtool \
-      pkg-config
-
-# Packages needed for nftables
-RUN apt-get update && apt-get install -y \
-      asciidoc-base \
-      automake \
-      bison \
-      debhelper-compat \
-      dh-python \
-      docbook-xsl \
-      flex \
-      libeditreadline-dev \
-      libgmp-dev \
-      libjansson-dev \
-      libmnl-dev \
-      libtool \
-      libxtables-dev \
-      python3-all \
-      python3-setuptools \
-      xsltproc
-
-# Packages needed for libnetfilter-conntrack
-RUN apt-get update && apt-get install -y \
-      debhelper-compat \
-      libmnl-dev \
-      libnfnetlink-dev \
-      libnetfilter-cthelper-dev \
-      libnetfilter-cttimeout-dev \
-      libnetfilter-queue-dev \
-      libtool
-
-# Packages needed for wide-dhcpv6
-RUN apt-get update && apt-get install -y \
-      bison \
-      debhelper \
-      flex \
-      libfl-dev \
-      rsync
-
-# Packages needed for vyos-http-api-tools
-RUN apt-get update && apt-get install -y \
-      dh-virtualenv \
-      python3-venv
-
 # Packages needed for openvpn-otp
 RUN apt-get update && apt-get install -y \
       debhelper \
@@ -522,37 +332,10 @@ RUN apt-get update && apt-get install -y \
       openvpn
 
 # Packages needed for OWAMP/TWAMP (service sla)
-RUN apt-get update && apt-get install -y \
-      dh-exec \
-      libi2util-dev \
-      i2util-tools
-
-# Packages needed for keepalived
-RUN apt-get update && apt-get install -y \
-      autoconf \
-      libglib2.0-dev \
-      libip4tc-dev \
-      libipset-dev \
-      libjson-c-dev \
-      libnfnetlink-dev \
-      libnftnl-dev \
-      libnl-3-dev \
-      libnl-genl-3-dev \
-      libnl-nf-3-dev \
-      libpcre2-dev \
-      libpopt-dev \
-      libsnmp-dev \
-      libssl-dev \
-      libsystemd-dev \
-      linux-libc-dev \
-      pkg-config
-
-# Packages needed for dropbear
-RUN apt-get update && apt-get install -y \
-      debhelper-compat \
-      libtomcrypt-dev \
-      libtommath-dev \
-      libz-dev
+RUN git clone -b 4.4.6 https://github.com/perfsonar/i2util.git /tmp/i2util && \
+      cd /tmp/i2util && \
+      dpkg-buildpackage -uc -us -tc -b && \
+      dpkg -i /tmp/*i2util*_$(dpkg-architecture -qDEB_HOST_ARCH).deb
 
 # Creating image for embedded systems needs this utilities to prepare a image file
 RUN apt-get update && apt-get install -y \
@@ -560,117 +343,50 @@ RUN apt-get update && apt-get install -y \
       udev \
       zip
 
-# Packages needed for Fastnetmon
-RUN if dpkg-architecture -ii386 || dpkg-architecture -iamd64; then \
-     apt-get update && apt-get install -y \
-       cmake \
-       debhelper-compat \
-       libboost-atomic-dev \
-       libboost-chrono-dev \
-       libboost-date-time-dev \
-       libboost-program-options-dev \
-       libboost-regex-dev \
-       libboost-system-dev \
-       libboost-thread-dev \
-       libbson-dev \
-       libcapnp-dev \
-       libgrpc-dev \
-       libgrpc++-dev \
-       libprotobuf-dev \
-       protobuf-compiler \
-       protobuf-compiler-grpc \
-       capnproto \
-       libhiredis-dev \
-       libjson-c-dev \
-       liblog4cpp5-dev \
-       libluajit-5.1-dev \
-       libicu-dev \
-       libmongoc-dev \
-       libncurses5-dev \
-       libpcap-dev \
-       pkg-config; \
-     fi
-
-# Packages needed for hostapd (wpa_supplicant)
-RUN apt-get update && apt-get install -y \
-      libdbus-1-dev \
-      libssl-dev \
-      libncurses5-dev \
-      libpcsclite-dev \
-      libnl-3-dev \
-      libnl-genl-3-dev \
-      libnl-route-3-dev  \
-      libreadline-dev \
-      pkg-config \
-      docbook-to-man \
-      docbook-utils
-
-# Packages needed for podman
-RUN apt-get update && sudo apt-get install -y \
-      btrfs-progs \
-      git \
-      iptables \
-      libassuan-dev \
-      libbtrfs-dev \
-      libc6-dev \
-      libdevmapper-dev \
-      libglib2.0-dev \
-      libgpgme-dev \
-      libgpg-error-dev \
-      libprotobuf-dev \
-      libprotobuf-c-dev \
-      libseccomp-dev \
-      libselinux1-dev \
-      libsystemd-dev \
-      pkg-config \
-      runc \
-      uidmap
-
 # Packages needed for Accel-PPP
 # XXX: please note that this must be installed after nftable dependencies - otherwise
 # APT will remove liblua5.3-dev which breaks the Accel-PPP build
+# With bookworm, updated to libssl3 (Note: https://github.com/accel-ppp/accel-ppp/issues/68)
 RUN apt-get update && apt-get install -y \
       liblua5.3-dev \
-      libssl1.1 \
+      libssl3 \
       libssl-dev \
       libpcre3-dev
 
-# Packages needed for sstp-client
+# debmake: a native Debian tool for preparing sources for packaging
 RUN apt-get update && apt-get install -y \
-      libssl-dev \
-      libevent-dev \
-      ppp-dev
+      debmake \
+      python3-debian
 
-# Packages needed for pam_tacplus
+# Packages for jool
 RUN apt-get update && apt-get install -y \
-      libpam-dev \
-      autoconf-archive \
-      gnulib \
-      libtool
+      libnl-genl-3-dev \
+      libxtables-dev
 
-#
-# fpm: a command-line program designed to help you build packages (e.g. deb)
-#
+# Packages needed for nftables
 RUN apt-get update && apt-get install -y \
-      ruby \
-      ruby-dev \
-      rubygems \
-      build-essential
-RUN gem install --no-document fpm
+      asciidoc-base
 
 # Allow password-less 'sudo' for all users in group 'sudo'
 RUN sed "s/^%sudo.*/%sudo\tALL=(ALL) NOPASSWD:ALL/g" -i /etc/sudoers && \
-    chmod a+s /usr/sbin/useradd /usr/sbin/groupadd /usr/sbin/gosu /usr/sbin/usermod
+    echo "vyos_bld\tALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers && \
+    chmod a+s /usr/sbin/useradd /usr/sbin/groupadd
 
 # Ensure sure all users have access to our OCAM and Go installation
 RUN echo "$(opam env --root=/opt/opam --set-root)" >> /etc/skel/.bashrc && \
     echo "export PATH=/opt/go/bin:\$PATH" >> /etc/skel/.bashrc
 
+# Rise upper limit for UID when working in an Active Direcotry integrated
+# environment. This solves the warning: vyos_bld's uid 1632000007 outside of the
+# UID_MIN 1000 and UID_MAX 60000 range.
+RUN sed -i 's/UID_MAX\t\t\t60000/UID_MAX\t\t\t2000000000/g' /etc/login.defs
+
 # Cleanup
 RUN rm -rf /tmp/*
 
 # Disable mouse in vim
-RUN echo -e "set mouse=\nset ttymouse=" > /etc/vim/vimrc.local
+RUN printf "set mouse=\nset ttymouse=\n" > /etc/vim/vimrc.local
 
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
+
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]

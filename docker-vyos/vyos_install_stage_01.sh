@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Copyright (C) 2020 VyOS maintainers and contributors
+# Copyright (C) 2020-2023 VyOS maintainers and contributors
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License version 2 or later as
@@ -23,7 +23,9 @@ echo "Configuring APT repositories"
 prepare_apt
 
 # Get list of VyOS packages
-vyos_packages=(`apt-cache -i depends vyos-world | awk '/Depends:/ { printf("%s ", $2) }'`)
+vyos_packages=(
+    "vyos-1x"
+    )
 
 # Do not analyze packages, which we do not need in Docker
 vyos_packages_filter=(
@@ -58,6 +60,7 @@ ignore_list=(
     "cluster-glue"
     "resource-agents"
     "heartbeat"
+    "podman"
     )
 
 # Get list of packages from VYOS repository
